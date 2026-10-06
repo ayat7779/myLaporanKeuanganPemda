@@ -194,6 +194,24 @@ def get_master_records(
                 return [dict(row) for row in cursor.fetchall()]
 
 
+def get_master_counts() -> dict[str, int]:
+    """Return the row count for each master table in one database query."""
+    query = sql.SQL("SELECT {}").format(
+        sql.SQL(", ").join(
+            sql.SQL("(SELECT count(*) FROM {}) AS {}").format(
+                sql.Identifier(table),
+                sql.Identifier(table),
+            )
+            for table in MASTER_TABLES
+        )
+    )
+    with closing(get_connection()) as conn:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return dict(zip(MASTER_TABLES, cursor.fetchone(), strict=True))
+
+
 def update_master_record(
     table: str,
     key: Mapping[str, Any],
