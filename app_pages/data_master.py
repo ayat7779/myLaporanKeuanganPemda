@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import psycopg2
 import streamlit as st
@@ -53,11 +53,131 @@ PARENT_TABLES = {
 }
 TABLE_LABELS = {table: label for label, table in TABLES.items()}
 YEAR_BUDGET_LABEL = "Tahun anggaran"
+MasterAction = Literal["create", "update", "delete"]
+
+
+def complete_action(message: str, clear_keys: tuple[str, ...] = ()) -> None:
+    st.session_state["master_action_notice"] = message
+    st.session_state["master_clear_keys"] = clear_keys
+    st.rerun()
+
+
+@st.dialog("Konfirmasi")
+def confirm_master_action(
+    action: MasterAction,
+    table: str,
+    values: Mapping[str, Any] | None = None,
+    key: Mapping[str, Any] | None = None,
+    clear_keys: tuple[str, ...] = (),
+    description: str = "",
+) -> None:
+    prompts = {
+        "create": "Tambahkan data ini?",
+        "update": "Simpan perubahan ini?",
+        "delete": "Hapus data ini? Tindakan ini tidak dapat dibatalkan.",
+    }
+    st.write(prompts[action])
+    details = [description] if description else []
+    if values:
+        details.extend(
+            f"{FIELD_LABELS.get(column, column)}: {value}"
+            for column, value in values.items()
+        )
+    if details:
+        st.caption(" · ".join(details))
+
+    confirm_label = {
+        "create": "Tambah",
+        "update": "Simpan",
+        "delete": "Hapus",
+    }[action]
+    confirm_column, cancel_column = st.columns(2)
+    if confirm_column.button(
+        confirm_label,
+        type="primary",
+        key=f"confirm_master_{action}_{table}",
+    ):
+        try:
+            if action == "create":
+                record = create_master_record(table, values or {})
+                message = f"Data berhasil ditambahkan: {record_label(table, record)}"
+            elif action == "update":
+                record = update_master_record(table, key or {}, values or {})
+                message = f"Data berhasil diperbarui: {record_label(table, record)}"
+            else:
+                deleted = delete_master_record(table, key or {})
+                if not deleted:
+                    st.warning("Data sudah tidak ditemukan.")
+                    return
+                message = "Data berhasil dihapus."
+        except (ValueError, LookupError, psycopg2.Error) as error:
+            show_database_error(error)
+        else:
+            complete_action(message, clear_keys)
+
+    if cancel_column.button("Batal", key=f"cancel_master_{action}_{table}"):
+        st.rerun()
+
+
+@st.dialog("Konfirmasi")
+def confirm_year_budget_action(
+    action: MasterAction,
+    nama_tahun: str = "",
+    keterangan: str = "",
+    id: int | None = None,
+    clear_keys: tuple[str, ...] = (),
+) -> None:
+    prompts = {
+        "create": "Tambahkan tahun anggaran ini?",
+        "update": "Simpan perubahan ini?",
+        "delete": "Hapus tahun anggaran ini? Tindakan ini tidak dapat dibatalkan.",
+    }
+    st.write(prompts[action])
+    details = [nama_tahun]
+    if keterangan:
+        details.append(keterangan)
+    st.caption(" · ".join(details))
+
+    confirm_label = {
+        "create": "Tambah",
+        "update": "Simpan",
+        "delete": "Hapus",
+    }[action]
+    confirm_column, cancel_column = st.columns(2)
+    if confirm_column.button(
+        confirm_label,
+        type="primary",
+        key=f"confirm_year_budget_{action}",
+    ):
+        try:
+            if action == "create":
+                record = create_tahun_anggaran(nama_tahun, keterangan)
+                message = f"Tahun anggaran {record['nama_tahun']} berhasil ditambahkan."
+            elif action == "update":
+                if id is None:
+                    raise ValueError("ID tahun anggaran wajib diisi")
+                record = update_tahun_anggaran(id, nama_tahun, keterangan)
+                message = f"Tahun anggaran {record['nama_tahun']} berhasil diperbarui."
+            else:
+                if id is None:
+                    raise ValueError("ID tahun anggaran wajib diisi")
+                deleted = delete_tahun_anggaran(id)
+                if not deleted:
+                    st.warning("Tahun anggaran sudah tidak ditemukan.")
+                    return
+                message = "Tahun anggaran berhasil dihapus."
+        except (ValueError, LookupError, psycopg2.Error) as error:
+            show_database_error(error)
+        else:
+            complete_action(message, clear_keys)
+
+    if cancel_column.button("Batal", key=f"cancel_year_budget_{action}"):
+        st.rerun()
 
 
 def render_year_budget(mode: str) -> None:
     if mode == "Tambah data":
-        with st.form("create_tahun_anggaran", clear_on_submit=True):
+        with st.form("create_tahun_anggaran"):
             nama_tahun = st.text_input(
                 "Nama tahun", key="create_tahun_anggaran_nama"
             )
@@ -69,15 +189,15 @@ def render_year_budget(mode: str) -> None:
             )
 
         if submitted:
-            try:
-                record = create_tahun_anggaran(nama_tahun, keterangan)
-            except (ValueError, psycopg2.Error) as error:
-                show_database_error(error)
-            else:
-                st.success(
-                    f"Tahun anggaran {record['nama_tahun']} berhasil ditambahkan."
-                )
-                st.rerun()
+            confirm_year_budget_action(
+                "create",
+                nama_tahun,
+                keterangan,
+                clear_keys=(
+                    "create_tahun_anggaran_nama",
+                    "create_tahun_anggaran_keterangan",
+                ),
+            )
         return
 
     try:
@@ -126,36 +246,29 @@ def render_year_budget(mode: str) -> None:
         )
 
     if update_submitted:
-        try:
-            updated = update_tahun_anggaran(
-                selected["id"], nama_tahun, keterangan
-            )
-        except (ValueError, LookupError, psycopg2.Error) as error:
-            show_database_error(error)
-        else:
-            st.success(f"Tahun anggaran {updated['nama_tahun']} berhasil diperbarui.")
-            st.rerun()
+        confirm_year_budget_action(
+            "update",
+            nama_tahun,
+            keterangan,
+            selected["id"],
+            (
+                f"edit_tahun_anggaran_nama_{selected['id']}",
+                f"edit_tahun_anggaran_keterangan_{selected['id']}",
+            ),
+        )
 
-    confirmed = st.checkbox(
-        "Saya yakin ingin menghapus tahun anggaran ini",
-        key=f"confirm_delete_tahun_anggaran_{selected['id']}",
-    )
     if st.button(
         "Hapus data",
         type="secondary",
         icon=":material/delete:",
-        disabled=not confirmed,
         key=f"delete_tahun_anggaran_{selected['id']}",
     ):
-        try:
-            deleted = delete_tahun_anggaran(selected["id"])
-        except psycopg2.Error as error:
-            show_database_error(error)
-        else:
-            if deleted:
-                st.success("Tahun anggaran berhasil dihapus.")
-                st.rerun()
-            st.warning("Tahun anggaran sudah tidak ditemukan.")
+        confirm_year_budget_action(
+            "delete",
+            selected["nama_tahun"],
+            selected["keterangan"] or "",
+            selected["id"],
+        )
 
 
 def record_label(table: str, row: Mapping[str, Any]) -> str:
@@ -219,7 +332,7 @@ def render_create(table: str) -> None:
         for column in MASTER_TABLES[parent_table][1]
     }
     editable_columns = [column for column in columns if column not in parent_columns]
-    with st.form(f"create_{table}", clear_on_submit=True):
+    with st.form(f"create_{table}"):
         for column in editable_columns:
             values[column] = st.text_input(
                 FIELD_LABELS[column], key=f"create_{table}_{column}"
@@ -229,13 +342,15 @@ def render_create(table: str) -> None:
         )
 
     if submitted:
-        try:
-            record = create_master_record(table, values)
-        except (ValueError, psycopg2.Error) as error:
-            show_database_error(error)
-        else:
-            st.success(f"Data berhasil ditambahkan: {record_label(table, record)}")
-            st.rerun()
+        confirm_master_action(
+            "create",
+            table,
+            values=values,
+            clear_keys=tuple(
+                f"create_{table}_{column}" for column in editable_columns
+            ),
+            description=f"Jenis data: {TABLE_LABELS[table]}",
+        )
 
 
 def render_manage(table: str) -> None:
@@ -269,36 +384,31 @@ def render_manage(table: str) -> None:
         )
 
     if update_submitted:
-        try:
-            updated = update_master_record(table, key, {name_column: new_name})
-        except (ValueError, LookupError, psycopg2.Error) as error:
-            show_database_error(error)
-        else:
-            st.success(f"Data berhasil diperbarui: {record_label(table, updated)}")
-            st.rerun()
+        confirm_master_action(
+            "update",
+            table,
+            values={name_column: new_name},
+            key=key,
+            clear_keys=(f"edit_name_{table}_{record_key}",),
+            description=record_label(
+                table, {**selected, name_column: new_name}
+            ),
+        )
 
-    confirmed = st.checkbox(
-        "Saya yakin ingin menghapus data ini",
-        key=f"confirm_delete_{table}_{record_key}",
-    )
     delete_submitted = st.button(
         "Hapus data",
         type="secondary",
         icon=":material/delete:",
-        disabled=not confirmed,
         key=f"delete_{table}_{record_key}",
     )
 
     if delete_submitted:
-        try:
-            deleted = delete_master_record(table, key)
-        except psycopg2.Error as error:
-            show_database_error(error)
-        else:
-            if deleted:
-                st.success("Data berhasil dihapus.")
-                st.rerun()
-            st.warning("Data sudah tidak ditemukan.")
+        confirm_master_action(
+            "delete",
+            table,
+            key=key,
+            description=record_label(table, selected),
+        )
 
 
 def render_browse(table: str) -> None:
@@ -316,6 +426,12 @@ def render_browse(table: str) -> None:
 
 
 st.title("Data master")
+for widget_key in st.session_state.pop("master_clear_keys", ()):
+    st.session_state.pop(widget_key, None)
+notice = st.session_state.pop("master_action_notice", None)
+if notice:
+    st.success(notice)
+
 st.caption("Kelola data master anggaran dan hierarki rincian objek.")
 
 selected_label = st.selectbox(
