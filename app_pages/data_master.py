@@ -7,8 +7,12 @@ import streamlit as st
 from database import (
     MASTER_TABLES,
     create_master_record,
+    create_tahun_anggaran,
     delete_master_record,
+    delete_tahun_anggaran,
+    get_tahun_anggaran,
     get_master_records,
+    update_tahun_anggaran,
     update_master_record,
 )
 
@@ -48,6 +52,110 @@ PARENT_TABLES = {
     ),
 }
 TABLE_LABELS = {table: label for label, table in TABLES.items()}
+YEAR_BUDGET_LABEL = "Tahun anggaran"
+
+
+def render_year_budget(mode: str) -> None:
+    if mode == "Tambah data":
+        with st.form("create_tahun_anggaran", clear_on_submit=True):
+            nama_tahun = st.text_input(
+                "Nama tahun", key="create_tahun_anggaran_nama"
+            )
+            keterangan = st.text_area(
+                "Keterangan", key="create_tahun_anggaran_keterangan"
+            )
+            submitted = st.form_submit_button(
+                "Simpan data", type="primary", icon=":material/save:"
+            )
+
+        if submitted:
+            try:
+                record = create_tahun_anggaran(nama_tahun, keterangan)
+            except (ValueError, psycopg2.Error) as error:
+                show_database_error(error)
+            else:
+                st.success(
+                    f"Tahun anggaran {record['nama_tahun']} berhasil ditambahkan."
+                )
+                st.rerun()
+        return
+
+    try:
+        records = get_tahun_anggaran()
+    except psycopg2.Error as error:
+        show_database_error(error)
+        return
+
+    if mode == "Lihat data":
+        st.subheader("Daftar tahun anggaran")
+        if records:
+            st.dataframe(
+                records,
+                hide_index=True,
+                alt="Daftar tahun anggaran beserta keterangan",
+            )
+            st.caption(f"Total: {len(records)} data")
+        else:
+            st.info("Belum ada data tahun anggaran.")
+        return
+
+    st.subheader("Ubah atau hapus tahun anggaran")
+    if not records:
+        st.info("Belum ada data tahun anggaran untuk dikelola.")
+        return
+
+    selected = st.selectbox(
+        "Pilih tahun anggaran",
+        records,
+        format_func=lambda row: f"{row['nama_tahun']} (ID: {row['id']})",
+        key="manage_tahun_anggaran",
+    )
+    with st.form("update_tahun_anggaran"):
+        nama_tahun = st.text_input(
+            "Nama tahun",
+            value=selected["nama_tahun"],
+            key=f"edit_tahun_anggaran_nama_{selected['id']}",
+        )
+        keterangan = st.text_area(
+            "Keterangan",
+            value=selected["keterangan"] or "",
+            key=f"edit_tahun_anggaran_keterangan_{selected['id']}",
+        )
+        update_submitted = st.form_submit_button(
+            "Simpan perubahan", type="primary", icon=":material/edit:"
+        )
+
+    if update_submitted:
+        try:
+            updated = update_tahun_anggaran(
+                selected["id"], nama_tahun, keterangan
+            )
+        except (ValueError, LookupError, psycopg2.Error) as error:
+            show_database_error(error)
+        else:
+            st.success(f"Tahun anggaran {updated['nama_tahun']} berhasil diperbarui.")
+            st.rerun()
+
+    confirmed = st.checkbox(
+        "Saya yakin ingin menghapus tahun anggaran ini",
+        key=f"confirm_delete_tahun_anggaran_{selected['id']}",
+    )
+    if st.button(
+        "Hapus data",
+        type="secondary",
+        icon=":material/delete:",
+        disabled=not confirmed,
+        key=f"delete_tahun_anggaran_{selected['id']}",
+    ):
+        try:
+            deleted = delete_tahun_anggaran(selected["id"])
+        except psycopg2.Error as error:
+            show_database_error(error)
+        else:
+            if deleted:
+                st.success("Tahun anggaran berhasil dihapus.")
+                st.rerun()
+            st.warning("Tahun anggaran sudah tidak ditemukan.")
 
 
 def record_label(table: str, row: Mapping[str, Any]) -> str:
@@ -208,10 +316,13 @@ def render_browse(table: str) -> None:
 
 
 st.title("Data master")
-st.caption("Kelola hierarki data Kelompok sampai Sub rincian objek.")
+st.caption("Kelola data master anggaran dan hierarki rincian objek.")
 
-selected_label = st.selectbox("Jenis data", list(TABLES), key="selected_master")
-selected_table = TABLES[selected_label]
+selected_label = st.selectbox(
+    "Jenis data",
+    [*TABLES, YEAR_BUDGET_LABEL],
+    key="selected_master",
+)
 mode = st.segmented_control(
     "Aktivitas",
     ("Tambah data", "Kelola data", "Lihat data"),
@@ -219,18 +330,22 @@ mode = st.segmented_control(
     key="master_action",
 )
 
-if mode == "Tambah data":
-    try:
-        render_create(selected_table)
-    except psycopg2.Error as error:
-        show_database_error(error)
-elif mode == "Kelola data":
-    try:
-        render_manage(selected_table)
-    except psycopg2.Error as error:
-        show_database_error(error)
-elif mode == "Lihat data":
-    try:
-        render_browse(selected_table)
-    except psycopg2.Error as error:
-        show_database_error(error)
+if selected_label == YEAR_BUDGET_LABEL:
+    render_year_budget(mode)
+else:
+    selected_table = TABLES[selected_label]
+    if mode == "Tambah data":
+        try:
+            render_create(selected_table)
+        except psycopg2.Error as error:
+            show_database_error(error)
+    elif mode == "Kelola data":
+        try:
+            render_manage(selected_table)
+        except psycopg2.Error as error:
+            show_database_error(error)
+    elif mode == "Lihat data":
+        try:
+            render_browse(selected_table)
+        except psycopg2.Error as error:
+            show_database_error(error)
